@@ -1,0 +1,24 @@
+[package]
+name = "ai-model-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "ONNX graph viewer. Reads ModelProto from the public ONNX spec and draws the graph."
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "ai-model-viewer"
+path = "src/main.rs"
+
+[[bin]]
+name = "ai-model-viewer-mac"
+path = "src/bin/ai-model-viewer-mac.rs"
+required-features = ["app"]
+
+[dependencies]
+rfd = { version = "0.17", optional = true }
+tao = { version = "0.37", optional = true }
+wry = { version = "0.57", optional = true }
+
+[features]
+app = ["dep:tao", "dep:wry", "dep:rfd"]
