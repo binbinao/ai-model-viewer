@@ -57,6 +57,8 @@ pub fn render_html(model: &Model, scene: &Scene) -> String {
         body.push_str(&node_markup(ordinal, node));
     }
 
+    let (box_x, box_y, box_w, box_h) = scene_bounds(scene);
+
     let producer = if model.producer_name.is_empty() {
         String::new()
     } else if model.producer_version.is_empty() {
@@ -218,11 +220,15 @@ pub fn render_html(model: &Model, scene: &Scene) -> String {
   #main {{
     flex: 1 1 auto;
     min-height: 0;
+    height: 100%;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 310px;
   }}
   #viewport {{
     position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
     background:
       radial-gradient(circle at 1px 1px, #22262e 1px, transparent 0) 0 0 / 22px 22px,
@@ -230,6 +236,13 @@ pub fn render_html(model: &Model, scene: &Scene) -> String {
     cursor: grab;
   }}
   #viewport.dragging {{ cursor: grabbing; }}
+  #surface {{
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }}
   .edge {{
     fill: none;
     stroke: #6e7787;
@@ -347,13 +360,14 @@ pub fn render_html(model: &Model, scene: &Scene) -> String {
 </header>
 <div id="main">
   <div id="viewport">
-    <svg id="surface" width="100%" height="100%" data-width="{width}" data-height="{height}">
+    <svg id="surface" width="100%" height="100%" data-width="{width}" data-height="{height}" data-box-x="{box_x:.1}" data-box-y="{box_y:.1}" data-box-w="{box_w:.1}" data-box-h="{box_h:.1}">
       <g id="scene">{body}</g>
     </svg>
     <div id="tools">
       <button type="button" id="zoom-in" title="放大">+</button>
       <button type="button" id="zoom-out" title="缩小">−</button>
-      <button type="button" id="fit" title="适配窗口">适配</button>
+      <button type="button" id="fit" title="缩放以完整显示整张图">适配</button>
+      <button type="button" id="reset-100" title="恢复 100% 比例并跳到顶部">1:1</button>
     </div>
   </div>
   <aside>
@@ -366,25 +380,76 @@ pub fn render_html(model: &Model, scene: &Scene) -> String {
 const records = JSON.parse(document.getElementById("model").textContent);
 const byId = Object.fromEntries(records.map((node) => [node.id, node]));
 const viewport = document.getElementById("viewport");
+const surface = document.getElementById("surface");
 const scene = document.getElementById("scene");
+const tools = document.getElementById("tools");
 const panelTitle = document.getElementById("panel-title");
 const panelBody = document.getElementById("panel-body");
-let x = 24, y = 24, scale = 1, drag = null;
+let x = 24, y = 24, scale = 1, drag = null, userMoved = false;
+
+const MIN_SCALE = 0.01;
+const MAX_SCALE = 4.0;
+
+function graphBounds() {{
+  const bx = parseFloat(surface.dataset.boxX || "0");
+  const by = parseFloat(surface.dataset.boxY || "0");
+  const bw = parseFloat(surface.dataset.boxW || "0");
+  const bh = parseFloat(surface.dataset.boxH || "0");
+  if (bw > 0 && bh > 0) {{
+    return {{ x: bx, y: by, width: bw, height: bh }};
+  }}
+  try {{
+    const box = scene.getBBox();
+    if (box && box.width > 0 && box.height > 0) return box;
+  }} catch (_) {{}}
+  return {{
+    x: 0,
+    y: 0,
+    width: Math.max(1, parseFloat(surface.dataset.width || "300")),
+    height: Math.max(1, parseFloat(surface.dataset.height || "300")),
+  }};
+}}
 
 function apply() {{
   scene.setAttribute("transform", `translate(${{x}} ${{y}}) scale(${{scale}})`);
 }}
+
 function fit() {{
-  const box = scene.getBBox();
+  const box = graphBounds();
   const rect = viewport.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
-  const sx = (rect.width - 56) / Math.max(box.width, 1);
-  const sy = (rect.height - 56) / Math.max(box.height, 1);
-  scale = Math.max(0.15, Math.min(1.35, Math.min(sx, sy)));
+  const padX = Math.min(64, rect.width * 0.08);
+  const padY = Math.min(64, rect.height * 0.08);
+  const availW = Math.max(60, rect.width - padX * 2);
+  const availH = Math.max(60, rect.height - padY * 2);
+  const sx = availW / Math.max(box.width, 1);
+  const sy = availH / Math.max(box.height, 1);
+  scale = Math.max(MIN_SCALE, Math.min(1.25, Math.min(sx, sy)));
   x = (rect.width - box.width * scale) / 2 - box.x * scale;
-  y = Math.max(24, (rect.height - box.height * scale) / 2) - box.y * scale;
+  y = (rect.height - box.height * scale) / 2 - box.y * scale;
   apply();
 }}
+
+function resetOneToOne() {{
+  const box = graphBounds();
+  const rect = viewport.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  scale = 1;
+  x = (rect.width - box.width * scale) / 2 - box.x * scale;
+  y = 28 - box.y * scale;
+  userMoved = true;
+  apply();
+}}
+
+function zoomAt(factor, cx, cy) {{
+  const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * factor));
+  x = cx - (cx - x) * (next / scale);
+  y = cy - (cy - y) * (next / scale);
+  scale = next;
+  userMoved = true;
+  apply();
+}}
+
 function show(id) {{
   for (const el of scene.querySelectorAll(".node")) el.classList.toggle("selected", el.dataset.id === id);
   const node = byId[id];
@@ -407,7 +472,13 @@ function show(id) {{
     panelBody.appendChild(item);
   }}
 }}
+
+tools.addEventListener("pointerdown", (event) => {{
+  event.stopPropagation();
+}});
+
 viewport.addEventListener("pointerdown", (event) => {{
+  if (event.target.closest("#tools")) return;
   const node = event.target.closest(".node");
   if (node) {{
     show(node.dataset.id);
@@ -415,12 +486,13 @@ viewport.addEventListener("pointerdown", (event) => {{
   }}
   drag = {{ px: event.clientX, py: event.clientY, x, y }};
   viewport.classList.add("dragging");
-  viewport.setPointerCapture(event.pointerId);
+  try {{ viewport.setPointerCapture(event.pointerId); }} catch (_) {{}}
 }});
 viewport.addEventListener("pointermove", (event) => {{
   if (!drag) return;
   x = drag.x + event.clientX - drag.px;
   y = drag.y + event.clientY - drag.py;
+  userMoved = true;
   apply();
 }});
 function endDrag() {{
@@ -429,21 +501,47 @@ function endDrag() {{
 }}
 viewport.addEventListener("pointerup", endDrag);
 viewport.addEventListener("pointercancel", endDrag);
+viewport.addEventListener("dblclick", (event) => {{
+  if (event.target.closest("#tools") || event.target.closest(".node")) return;
+  userMoved = false;
+  fit();
+}});
 viewport.addEventListener("wheel", (event) => {{
   event.preventDefault();
-  const next = Math.min(2.8, Math.max(0.15, scale * (event.deltaY < 0 ? 1.1 : 0.9)));
   const rect = viewport.getBoundingClientRect();
   const cx = event.clientX - rect.left;
   const cy = event.clientY - rect.top;
-  x = cx - (cx - x) * (next / scale);
-  y = cy - (cy - y) * (next / scale);
-  scale = next;
-  apply();
+  zoomAt(event.deltaY < 0 ? 1.12 : 0.89, cx, cy);
 }}, {{ passive: false }});
-window.addEventListener("resize", fit);
-document.getElementById("zoom-in").onclick = () => {{ scale = Math.min(2.8, scale * 1.15); apply(); }};
-document.getElementById("zoom-out").onclick = () => {{ scale = Math.max(0.15, scale / 1.15); apply(); }};
-document.getElementById("fit").onclick = fit;
+
+document.getElementById("zoom-in").addEventListener("click", (event) => {{
+  event.stopPropagation();
+  const rect = viewport.getBoundingClientRect();
+  zoomAt(1.2, rect.width / 2, rect.height / 2);
+}});
+document.getElementById("zoom-out").addEventListener("click", (event) => {{
+  event.stopPropagation();
+  const rect = viewport.getBoundingClientRect();
+  zoomAt(1 / 1.2, rect.width / 2, rect.height / 2);
+}});
+document.getElementById("fit").addEventListener("click", (event) => {{
+  event.stopPropagation();
+  userMoved = false;
+  fit();
+}});
+document.getElementById("reset-100").addEventListener("click", (event) => {{
+  event.stopPropagation();
+  resetOneToOne();
+}});
+
+window.addEventListener("resize", () => {{
+  if (!userMoved) fit();
+}});
+if (typeof ResizeObserver !== "undefined") {{
+  new ResizeObserver(() => {{
+    if (!userMoved) fit();
+  }}).observe(viewport);
+}}
 document.getElementById("search").addEventListener("input", (event) => {{
   const query = event.target.value.trim().toLowerCase();
   for (const el of scene.querySelectorAll(".node")) {{
@@ -466,8 +564,9 @@ if (window.ipc) {{
   appButton("打开…", "open");
   appButton("切换权重", "weights");
 }}
-apply();
+fit();
 requestAnimationFrame(fit);
+window.addEventListener("load", fit);
 </script>
 </body>
 </html>
@@ -488,16 +587,42 @@ requestAnimationFrame(fit);
             format!(" · {opsets}")
         },
         op_badges = op_badges,
-        hint = "点击画布中的算子或张量节点查看输入、输出、权重和属性详情。使用鼠标滚轮或触控板缩放，按住画布拖动。",
+        hint = "点击画布中的算子或张量节点查看输入、输出、权重和属性详情。使用鼠标滚轮或触控板缩放，按住画布拖动，双击空白处适配窗口。",
         body = body,
         width = scene.width,
         height = scene.height,
+        box_x = box_x,
+        box_y = box_y,
+        box_w = box_w,
+        box_h = box_h,
         json = json_records(&scene.nodes),
     )
 }
 
 fn defs() -> String {
     r##"<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#6e7787"/></marker></defs>"##.into()
+}
+
+fn scene_bounds(scene: &Scene) -> (f64, f64, f64, f64) {
+    if scene.nodes.is_empty() {
+        return (0.0, 0.0, scene.width.max(1.0), scene.height.max(1.0));
+    }
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for node in &scene.nodes {
+        min_x = min_x.min(node.x);
+        min_y = min_y.min(node.y);
+        max_x = max_x.max(node.x + node.w);
+        max_y = max_y.max(node.y + node.h);
+    }
+    (
+        min_x,
+        min_y,
+        (max_x - min_x).max(1.0),
+        (max_y - min_y).max(1.0),
+    )
 }
 
 fn node_markup(ordinal: usize, node: &SceneNode) -> String {
@@ -527,32 +652,39 @@ fn node_markup(ordinal: usize, node: &SceneNode) -> String {
     let mut inner = String::new();
     // Base card background
     inner.push_str(&format!(
-        r#"<rect x="0" y="0" width="{w:.1}" height="{h:.1}" rx="6" fill="{body_fill}"/>"#,
+        r#"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="6" fill="{body_fill}"/>"#,
+        x = node.x,
+        y = node.y,
         w = node.w,
         h = node.h,
     ));
     // Header band
     inner.push_str(&format!(
-        r#"<rect x="0" y="0" width="{w:.1}" height="{hh:.1}" fill="{header_fill}"/>"#,
+        r#"<rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{hh:.1}" fill="{header_fill}"/>"#,
+        x = node.x,
+        y = node.y,
         w = node.w,
         hh = header_h,
     ));
     // Title text
     inner.push_str(&format!(
-        r##"<text x="11" y="17.5" font-size="12.5" font-weight="600" fill="#f7f9fc">{title}</text>"##,
+        r##"<text x="{tx:.1}" y="{ty:.1}" font-size="12.5" font-weight="600" fill="#f7f9fc">{title}</text>"##,
+        tx = node.x + 11.0,
+        ty = node.y + 17.5,
         title = escape(&clip_to_px(&node.title, avail_px, 12.5)),
     ));
     // Body lines
     for (index, line) in node.lines.iter().enumerate() {
         inner.push_str(&format!(
-            r##"<text x="11" y="{y:.1}" font-size="11" fill="#c7cdd8">{line}</text>"##,
-            y = 43.0 + index as f64 * 17.0,
+            r##"<text x="{tx:.1}" y="{ty:.1}" font-size="11" fill="#c7cdd8">{line}</text>"##,
+            tx = node.x + 11.0,
+            ty = node.y + 43.0 + index as f64 * 17.0,
             line = escape(&clip_to_px(line, avail_px, 11.0)),
         ));
     }
 
     format!(
-        r#"<g class="node" data-id="{id}"><defs><clipPath id="{clip_id}"><rect x="0" y="0" width="{w:.1}" height="{h:.1}" rx="6"/></clipPath></defs><svg x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" overflow="hidden"><g clip-path="url(#{clip_id})">{inner}</g></svg><rect class="card-outline" x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="6"/></g>"#,
+        r#"<g class="node" data-id="{id}"><clipPath id="{clip_id}"><rect x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="6"/></clipPath><g clip-path="url(#{clip_id})">{inner}</g><rect class="card-outline" x="{x:.1}" y="{y:.1}" width="{w:.1}" height="{h:.1}" rx="6"/></g>"#,
         id = escape(&node.id),
         clip_id = clip_id,
         x = node.x,
