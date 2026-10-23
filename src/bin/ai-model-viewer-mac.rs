@@ -1,4 +1,4 @@
-//! macOS window around the ONNX graph page.
+//! macOS window around the model graph page.
 //!
 //! The page is the same HTML the CLI writes. This binary hosts it in a
 //! WKWebView, with a native open panel and file drop.
@@ -22,8 +22,8 @@ fn main() {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title("AI Model Viewer")
-        .with_inner_size(LogicalSize::new(1200.0, 800.0))
-        .with_min_inner_size(LogicalSize::new(720.0, 480.0))
+        .with_inner_size(LogicalSize::new(1240.0, 820.0))
+        .with_min_inner_size(LogicalSize::new(760.0, 500.0))
         .build(&event_loop)
         .unwrap_or_else(|err| {
             eprintln!("ai-model-viewer-mac: 无法创建窗口: {err}");
@@ -160,7 +160,7 @@ fn present(webview: &WebView, window: &Window, path: &Path, weights: bool) -> Re
 fn welcome_page() -> String {
     message_page(
         "AI Model Viewer",
-        "打开模型文件（ONNX、Safetensors、GGUF、TFLite、PyTorch、TensorFlow、Keras），或把文件拖进窗口。",
+        "选择或拖入模型文件以可视化计算图与权重层级。",
     )
 }
 
@@ -172,20 +172,101 @@ fn message_page(title: &str, body: &str) -> String {
 <meta charset="utf-8">
 <title>{title}</title>
 <style>
-  html, body {{ margin: 0; height: 100%; background: #141414; color: #ececec;
-    font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; }}
-  main {{ min-height: 100%; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 12px; }}
-  button {{ background: #1d1d1d; color: inherit; border: 1px solid #3a3a3a;
-    border-radius: 4px; padding: 8px 14px; font: inherit; }}
-  p {{ margin: 0; color: #bdbdbd; max-width: 420px; text-align: center; }}
+  *, *::before, *::after {{ box-sizing: border-box; }}
+  html, body {{
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 1px 1px, #22262e 1px, transparent 0) 0 0 / 22px 22px,
+      #101215;
+    color: #e6e8ec;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }}
+  main {{
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }}
+  .card {{
+    width: 100%;
+    max-width: 480px;
+    padding: 36px 32px;
+    border-radius: 14px;
+    background: rgba(24, 27, 34, 0.92);
+    border: 1px dashed #363d4d;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    text-align: center;
+  }}
+  h1 {{
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    color: #f5f7fa;
+  }}
+  p {{
+    margin: 0;
+    color: #9ba3b2;
+    max-width: 380px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }}
+  .formats {{
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin: 4px 0 8px;
+  }}
+  .badge {{
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #1f242f;
+    border: 1px solid #2f3646;
+    color: #8ab4f8;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }}
+  button {{
+    background: #2b63d9;
+    color: #ffffff;
+    border: 1px solid #3d75eb;
+    border-radius: 7px;
+    padding: 8px 20px;
+    font: 500 13px/1.4 inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s;
+  }}
+  button:hover {{
+    background: #366fe6;
+  }}
 </style>
 </head>
 <body>
 <main>
-  <h1>{title}</h1>
-  <p>{body}</p>
-  <button type="button" onclick="window.ipc &amp;&amp; window.ipc.postMessage('open')">打开…</button>
+  <div class="card">
+    <h1>{title}</h1>
+    <p>{body}</p>
+    <div class="formats">
+      <span class="badge">.onnx</span>
+      <span class="badge">.safetensors</span>
+      <span class="badge">.gguf</span>
+      <span class="badge">.tflite</span>
+      <span class="badge">.pt / .pth</span>
+      <span class="badge">.pb</span>
+      <span class="badge">.keras / .h5</span>
+    </div>
+    <button type="button" onclick="window.ipc &amp;&amp; window.ipc.postMessage('open')">打开模型文件…</button>
+  </div>
 </main>
 </body>
 </html>"#,

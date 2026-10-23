@@ -1,4 +1,4 @@
-//! Layered graph placement for one ONNX graph.
+//! Layered graph placement for model graphs.
 //!
 //! Initializers stay off the canvas unless requested. A real model carries one
 //! weight tensor per parameter; drawing each of them hides the operator graph.
@@ -36,10 +36,11 @@ pub struct SceneNode {
     pub h: f64,
 }
 
-const NODE_W: f64 = 196.0;
+const MIN_NODE_W: f64 = 188.0;
+const MAX_NODE_W: f64 = 280.0;
 const GAP_X: f64 = 28.0;
-const GAP_Y: f64 = 72.0;
-const MARGIN: f64 = 28.0;
+const GAP_Y: f64 = 64.0;
+const MARGIN: f64 = 32.0;
 
 pub fn layout(model: &Model, show_weights: bool) -> Scene {
     let graph = &model.graph;
@@ -75,7 +76,7 @@ pub fn layout(model: &Model, show_weights: bool) -> Scene {
             producer.insert(tensor.name.clone(), idx);
             let mut draft = Draft::value(Kind::Initializer, &tensor.name, tensor.type_text.clone());
             if tensor.external {
-                draft.detail.push("数据在外部文件".into());
+                draft.detail.push("external: 数据在外部文件".into());
             }
             nodes.push(draft);
         }
@@ -89,7 +90,7 @@ pub fn layout(model: &Model, show_weights: bool) -> Scene {
             node.op_type.clone()
         };
         let mut lines = Vec::new();
-        if !node.name.is_empty() {
+        if !node.name.is_empty() && node.name != title {
             lines.push(node.name.clone());
         }
         let mut weights = Vec::new();
@@ -277,6 +278,24 @@ impl Draft {
     }
 }
 
+/// Estimate visual pixel width of a text string at a given font size, accounting
+/// for CJK full-width glyphs and uppercase characters.
+pub fn estimate_text_px(text: &str, font_px: f64) -> f64 {
+    let mut units = 0.0f64;
+    for ch in text.chars() {
+        if !ch.is_ascii() {
+            units += 1.05;
+        } else if ch.is_ascii_uppercase() || ch == 'M' || ch == 'W' || ch == '_' {
+            units += 0.68;
+        } else if matches!(ch, 'i' | 'l' | '1' | '.' | ':' | ',' | ' ' | '[' | ']') {
+            units += 0.36;
+        } else {
+            units += 0.56;
+        }
+    }
+    units * font_px
+}
+
 fn place(drafts: Vec<Draft>, edges: HashSet<(usize, usize)>) -> Scene {
     let n = drafts.len();
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -324,23 +343,45 @@ fn place(drafts: Vec<Draft>, edges: HashSet<(usize, usize)>) -> Scene {
     }
     order_groups(&mut groups, &preds, &succs);
 
+    let mut widths = vec![MIN_NODE_W; n];
     let mut heights = vec![0.0; n];
     for (idx, draft) in drafts.iter().enumerate() {
-        heights[idx] = 34.0 + draft.lines.len() as f64 * 16.0;
+        let title_px = estimate_text_px(&draft.title, 12.5) + 28.0;
+        let body_px = draft
+            .lines
+            .iter()
+            .map(|line| estimate_text_px(line, 11.0) + 28.0)
+            .fold(0.0, f64::max);
+        widths[idx] = title_px.max(body_px).clamp(MIN_NODE_W, MAX_NODE_W);
+        let body_h = if draft.lines.is_empty() {
+            6.0
+        } else {
+            draft.lines.len() as f64 * 17.0 + 10.0
+        };
+        heights[idx] = 28.0 + body_h;
     }
 
+    // Center each row horizontally relative to the widest row
+    let row_widths: Vec<f64> = groups
+        .iter()
+        .map(|group| {
+            let sum_w: f64 = group.iter().map(|&idx| widths[idx]).sum();
+            let gaps = group.len().saturating_sub(1) as f64 * GAP_X;
+            sum_w + gaps
+        })
+        .collect();
+    let max_row_width = row_widths.iter().copied().fold(MIN_NODE_W, f64::max);
+
     let mut positions = vec![(0.0, 0.0); n];
-    let mut max_x = 0.0f64;
     let mut y = MARGIN;
-    for group in &groups {
-        let row_width = group.len() as f64 * NODE_W + group.len().saturating_sub(1) as f64 * GAP_X;
-        let mut x = MARGIN;
+    for (g_idx, group) in groups.iter().enumerate() {
+        let rw = row_widths[g_idx];
+        let mut x = MARGIN + ((max_row_width - rw) / 2.0).max(0.0);
         let row_height = group.iter().map(|idx| heights[*idx]).fold(0.0, f64::max);
-        for idx in group {
-            positions[*idx] = (x, y);
-            x += NODE_W + GAP_X;
+        for &idx in group {
+            positions[idx] = (x, y);
+            x += widths[idx] + GAP_X;
         }
-        max_x = max_x.max(row_width + MARGIN);
         y += row_height + GAP_Y;
     }
 
@@ -358,7 +399,7 @@ fn place(drafts: Vec<Draft>, edges: HashSet<(usize, usize)>) -> Scene {
                 detail: draft.detail,
                 x,
                 y,
-                w: NODE_W,
+                w: widths[idx],
                 h: heights[idx],
             }
         })
@@ -367,7 +408,7 @@ fn place(drafts: Vec<Draft>, edges: HashSet<(usize, usize)>) -> Scene {
     Scene {
         nodes,
         edges: edges.into_iter().collect(),
-        width: max_x + MARGIN + NODE_W,
+        width: max_row_width + MARGIN * 2.0,
         height: y + MARGIN,
     }
 }
